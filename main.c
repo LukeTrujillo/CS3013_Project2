@@ -49,26 +49,22 @@ int main(int argc, char** argv) {
 	setup();
 
 	//parse stuff here
+	unsigned int process_id = atoi(strtok(argv[1], ","));
+	char *instruction_type = strtok(NULL, ",");
+	unsigned int virtual_address = atoi(strtok(NULL, ","));
+	unsigned int value = atoi(strtok(NULL, ","));
 
 
 	char command[100];
-	strcpy(command, argv[2]);
-
-	unsigned int process_id = atoi(argv[1]);
-	unsigned int virtual_address = atoi(argv[3]);
-
-	unsigned int value = atoi(argv[4]);
+	strcpy(command, instruction_type);
 
 	if(strcmp(command, "map") == 0) {
 
 		if(hardwareRegister[process_id] == -1) {
 			//need to create
-			//getNextFreePage(process_id, virtual_address, value);
+			getNextFreePage(process_id, virtual_address, value);
 			//getNextFreePage(process_id + 1, 1, 1);
 
-			getNextFreePage(0, 0, 0);
-			getNextFreePage(0, 16, 1);
-			getNextFreePage(0, 32, 1);
 		}
 	} 
 
