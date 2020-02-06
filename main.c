@@ -40,20 +40,23 @@ unsigned int const OFFSET_MASK = 0b001111;
 void setup();
 char* getNextFreePage(int, int, int);
 int getPageTableBaseRegister(int);
-
+void parse(char*, char**);
 
 void addPageTableEntry(int, int, int);
 int convertVPNtoPFN(int, int);
 int main(int argc, char** argv) {
-
+	while(1){
 	setup();
-
+	char word[100];
+	char* args[4];
+	printf("Instruction? ");
+	scanf("%s", word); 
+	parse(word, args);
 	//parse stuff here
-	unsigned int process_id = atoi(strtok(argv[1], ","));
-	char *instruction_type = strtok(NULL, ",");
-	unsigned int virtual_address = atoi(strtok(NULL, ","));
-	unsigned int value = atoi(strtok(NULL, ","));
-
+	unsigned int process_id = atoi(args[0]);
+	char *instruction_type = args[1];
+	unsigned int virtual_address = atoi(args[2]);
+	unsigned int value = atoi(args[3]);
 
 	char command[100];
 	strcpy(command, instruction_type);
@@ -82,7 +85,7 @@ int main(int argc, char** argv) {
 	
 
 	}
-
+	}
 	/*
 		psage frame 0 is for the page table
 		
@@ -200,6 +203,13 @@ int convertVPNtoPFN(int process_id, int vpn) {
 
 	
 
+}
+
+void parse(char* str, char** strs){
+	strs[0] = strtok(str, ",");
+	strs[1] = strtok(NULL, ",");
+	strs[2] = strtok(NULL, ",");
+	strs[3] = strtok(NULL, ",");
 }
 
 
