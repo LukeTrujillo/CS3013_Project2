@@ -24,15 +24,22 @@
 
 //two left-most bits are VPN, the rest are the offset
 
-unsigned char memory[MAX_PROCESS][PHYSICAL_MEMORY_SIZE];
+unsigned char memory[PHYSICAL_MEMORY_SIZE];
+unsigned char* hardwareRegister[MAX_PROCESS];
+
+unsigned char* freeList[PAGE_NUMBER];
+
+unsigned char swap[PAGE_SIZE];
 
 
 unsigned int const VPN_MASK = 0b110000;
 unsigned int const OFFSET_MASK = 0b001111;
 
-
+void setup();
 
 int main(int argc, char** argv) {
+
+	void setup();
 
 	//parse stuff here
 
@@ -83,5 +90,11 @@ int main(int argc, char** argv) {
 	printf("VA: %i VPN: %i OFFSET: %i PFN: %i PA: %i \n", virtual_address, vpn, offset, pfn, physical_address);
 
 	return 0;
+}
+
+void setup() {
+	for(int x = 0; x < PAGE_NUMBER; x++) {
+		freeList[x] = &memory[x * PAGE_SIZE];
+	}
 }
 
