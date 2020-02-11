@@ -37,6 +37,7 @@ unsigned char swapMemory[MAX_PROCESS][PAGE_SIZE];
 unsigned int const VPN_MASK = 0b110000;
 unsigned int const OFFSET_MASK = 0b001111;
 
+int createPageTableBaseRegister(int);
 void setup();
 char* getNextFreePage(int, int, int);
 int getPageTableBaseRegister(int);
@@ -44,47 +45,80 @@ void parse(char*, char**);
 
 void addPageTableEntry(int, int, int);
 int convertVPNtoPFN(int, int);
+int writable(int, int);
+void set_writable(int, int, int);
+
+int pageExists(int, int);
+
+
 int main(int argc, char** argv) {
-	while(1){
 	setup();
-	char word[100];
-	char* args[4];
-	printf("Instruction? ");
-	scanf("%s", word); 
-	parse(word, args);
-	//parse stuff here
-	unsigned int process_id = atoi(args[0]);
-	char *instruction_type = args[1];
-	unsigned int virtual_address = atoi(args[2]);
-	unsigned int value = atoi(args[3]);
+	while(1) {
+		char word[100];
+		char* args[4];
+		printf("Instruction? ");
+		scanf("%s", word); 
 
-	char command[100];
-	strcpy(command, instruction_type);
+		parse(word, args);
+		//parse stuff here
 
-	if(strcmp(command, "map") == 0) {
+		unsigned int process_id = atoi(args[0]);
+		char *instruction_type = args[1];
+		unsigned int virtual_address = atoi(args[2]);
+		unsigned int value = atoi(args[3]);
 
-		getNextFreePage(process_id, virtual_address, value);
+		char command[100];
+		strcpy(command, instruction_type);
 
-	} else if(strcmp(command, "store") == 0) {
-		getNextFreePage(0, 0, 1);
+		if(strcmp(command, "map") == 0) {
 
-		unsigned int vpn = virtual_address & VPN_MASK;
-		vpn = vpn >> OFFSET_SIZE;
+			if(pageExists(process_id, virtual_address) == 1) {
 
-		unsigned int pfn = convertVPNtoPFN(process_id, vpn);
+				if(writable(process_id, virtual_address) == value) {
+					printf("#Error: virtual page %d is already mapped with rw_bit=%d\n", ((virtual_address & VPN_MASK) >> OFFSET_SIZE), value);
+				} else {
+					set_writable(process_id, virtual_address, value);
+				}
+			} else {
+				getNextFreePage(process_id, virtual_address, value);
+			}
 
-		
-		
-		unsigned int offset = virtual_address & OFFSET_MASK;
+		} else if(strcmp(command, "store") == 0) {
+			
+			unsigned int vpn = virtual_address & VPN_MASK;
+			vpn = vpn >> OFFSET_SIZE;
 
-		unsigned int physical_address = (pfn | offset) + getPageTableBaseRegister(process_id) + PAGE_SIZE;
 
-		memory[physical_address] = value;
+			if(writable(process_id, vpn)) {
 
-		printf("Stored value %d at virtual address %d (physical address %d)\n", value, virtual_address, physical_address);
+				unsigned int pfn = convertVPNtoPFN(process_id, vpn);
+
+				unsigned int offset = virtual_address & OFFSET_MASK;
+
+				unsigned int physical_address = (pfn | offset) + getPageTableBaseRegister(process_id) + PAGE_SIZE;
+
+				memory[physical_address] = value;
+
+				printf("Stored value %d at virtual address %d (physical address %d)\n", value, virtual_address, physical_address);
+			} else {
+				printf("#Error: you tried to access a read-only page\n");
+			}
 	
 
-	}
+		} else if(strcmp(command, "load") == 0) {
+			unsigned int vpn = virtual_address & VPN_MASK;
+			vpn = vpn >> OFFSET_SIZE;
+
+			unsigned int pfn = convertVPNtoPFN(process_id, vpn);
+
+		
+		
+			unsigned int offset = virtual_address & OFFSET_MASK;
+
+			unsigned int physical_address = (pfn | offset) + getPageTableBaseRegister(process_id) + PAGE_SIZE;
+		
+			printf("The value %d is at virtual address %d (physical address %d)\n", memory[physical_address], virtual_address, physical_address);
+		}
 	}
 	/*
 		psage frame 0 is for the page table
@@ -122,30 +156,32 @@ void setup() {
 int getPageTableBaseRegister(int process_id) {
 	if(hardwareRegister[process_id] != -1) {
 		return hardwareRegister[process_id];
-	} else { //find which is a starting register
+	} 
 
+	return -1;
+}
+int createPageTableBaseRegister(int process_id) {
+	for(int x = 0; x < MAX_PROCESS; x++) {
+		if(freeList[x] == 1) {
+			//found a free space
+			hardwareRegister[process_id] = x * PHYSICAL_MEMORY_SIZE;
 
-		for(int x = 0; x < MAX_PROCESS; x++) {
-			if(freeList[x] == 1) {
-				//found a free space
-				hardwareRegister[process_id] = x * PHYSICAL_MEMORY_SIZE;
+			freeList[x] = 0;
 
-				freeList[x] = 0;
+			printf("Put page table for PID %d in physical frame 0.\n", process_id);
 
-				printf("Put page table for PID %d in physical frame 0.\n", process_id);
-
-				return hardwareRegister[process_id];
-			}
+			return getPageTableBaseRegister(process_id);
 		}
-
 	}
 
-	//something messed up
 	printf("no more memory\n");
+
+	return -1;
+
 }
 
 char* getNextFreePage(int process_id, int vpn, int rwFlag) {
-	int startingIndex = getPageTableBaseRegister(process_id);
+	int startingIndex = createPageTableBaseRegister(process_id);
 	
 	//now we need to find the next free page
 
@@ -200,9 +236,26 @@ int convertVPNtoPFN(int process_id, int vpn) {
 	char *entry = &memory[page_table_entry];
 
 	return entry[0];
+}
 
+int writable(int process_id, int vpn) {
+	int baseRegister = getPageTableBaseRegister(process_id);
+
+	int page_table_entry = vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE  -1);
+
+	char flag = memory[page_table_entry] - 48;
 	
+	return flag;
+}
+void set_writable(int process_id, int vpn, int value) {
+	int baseRegister = getPageTableBaseRegister(process_id);
 
+	int page_table_entry = vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE  -1);
+
+	memory[page_table_entry] = value + 48;
+
+
+	printf("Updaing permissions for virtual page %d (frame %d)\n", vpn, convertVPNtoPFN(process_id, vpn) + 1); 
 }
 
 void parse(char* str, char** strs){
@@ -210,6 +263,21 @@ void parse(char* str, char** strs){
 	strs[1] = strtok(NULL, ",");
 	strs[2] = strtok(NULL, ",");
 	strs[3] = strtok(NULL, ",");
+}
+
+int pageExists(int process_id, int vpn) {
+	//check if a page exists 
+
+	int baseRegister = getPageTableBaseRegister(process_id);
+
+	char pfn = memory[baseRegister + vpn * PAGE_TABLE_ENTRY_SIZE];
+
+	if(pfn >= 0 && pfn < 16 && processFreeList[process_id][pfn] == 0) {
+		return 1;
+	}
+	
+	return 0;
+	
 }
 
 
