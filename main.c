@@ -21,6 +21,9 @@
 #define PFN_SHIFT 0
 
 #define MAX_PROCESS 4
+#define RW_MASK 1
+#define VALID_MASK 2
+#define LOC_MASK 4
 
 //two left-most bits are VPN, the rest are the offset
 
@@ -48,6 +51,8 @@ int convertVPNtoPFN(int, int);
 int writable(int, int);
 void set_writable(int, int, int);
 
+void swap(int, int, int);
+
 int pageExists(int, int);
 
 
@@ -60,7 +65,6 @@ int main(int argc, char** argv) {
 		scanf("%s", word); 
 
 		parse(word, args);
-		//parse stuff here
 
 		unsigned int process_id = atoi(args[0]);
 		char *instruction_type = args[1];
@@ -111,28 +115,15 @@ int main(int argc, char** argv) {
 
 			unsigned int pfn = convertVPNtoPFN(process_id, vpn);
 
-		
-		
 			unsigned int offset = virtual_address & OFFSET_MASK;
 
 			unsigned int physical_address = (pfn | offset) + getPageTableBaseRegister(process_id) + PAGE_SIZE;
 		
 			printf("The value %d is at virtual address %d (physical address %d)\n", memory[physical_address], virtual_address, physical_address);
+		} else if(strcmp(command, "swap") == 0) {
+			swap(process_id, virtual_address, value);
 		}
 	}
-	/*
-		psage frame 0 is for the page table
-		
-		we need to store the process_id
-		and return the page frame number
-	*/
-	
-
-
-	//convert the number to binary 
-	// isolate the two leftmost bits 
-	
-	
 
 	return 0;
 }
@@ -206,12 +197,7 @@ char* getPageTable(int process_id) {
 
 void addPageTableEntry(int process_id, int vpn, int rwFlag) {
 	int startingIndex = getPageTableBaseRegister(process_id);
-	
 	char *pageTable = getPageTable(process_id);
-
-	//pfn on 2 left most bytes, r/w on right most byte
-
-	//now we need to find the next available page
 
 	for(int x = 0; x < PAGE_NUMBER - 1; x++) {
 		if(processFreeList[process_id][x] == 1) {
@@ -221,7 +207,10 @@ void addPageTableEntry(int process_id, int vpn, int rwFlag) {
 			
 			memory[startingIndex + vpn * PAGE_TABLE_ENTRY_SIZE] = x;
 
-			memory[(startingIndex + PAGE_TABLE_ENTRY_SIZE - 1) + vpn * PAGE_TABLE_ENTRY_SIZE] = rwFlag + 48;
+			//last byte: 0000 0 loc,valid,rw
+
+
+			memory[(startingIndex + PAGE_TABLE_ENTRY_SIZE - 1) + vpn * PAGE_TABLE_ENTRY_SIZE] = (rwFlag & RW_MASK) | (VALID_MASK) | (LOC_MASK);
 			break;
 			
 		}
@@ -243,16 +232,16 @@ int writable(int process_id, int vpn) {
 
 	int page_table_entry = vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE  -1);
 
-	char flag = memory[page_table_entry] - 48;
+	char flag = memory[page_table_entry] & RW_MASK;
 	
 	return flag;
 }
 void set_writable(int process_id, int vpn, int value) {
 	int baseRegister = getPageTableBaseRegister(process_id);
 
-	int page_table_entry = vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE  -1);
+	int page_table_entry = vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE  - 1);
 
-	memory[page_table_entry] = value + 48;
+	memory[page_table_entry] = memory[page_table_entry] ^ (value * RW_MASK);
 
 
 	printf("Updaing permissions for virtual page %d (frame %d)\n", vpn, convertVPNtoPFN(process_id, vpn) + 1); 
@@ -271,13 +260,64 @@ int pageExists(int process_id, int vpn) {
 	int baseRegister = getPageTableBaseRegister(process_id);
 
 	char pfn = memory[baseRegister + vpn * PAGE_TABLE_ENTRY_SIZE];
-
-	if(pfn >= 0 && pfn < 16 && processFreeList[process_id][pfn] == 0) {
+	
+	char valid = memory[vpn * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE - 2)];
+	
+	if(processFreeList[process_id][pfn] == 0 && valid != 0) {
 		return 1;
 	}
 	
 	return 0;
+}
+
+void swap(int process_id, int outgoing, int incoming) {
+	//assumptions no space for incoming so decided to evict outgoing
+
+	int baseRegister = getPageTableBaseRegister(process_id);
+
+	char *outgoing_page;
+	char pfn = memory[baseRegister + vpn * PAGE_TABLE_ENTRY_SIZE];
+
+	char *flags = &memory[outgoing * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE - 1];
+
+	unsigned int out_physical_address = pfn  + getPageTableBaseRegister(process_id) + PAGE_SIZE;
+	outgoing_page = &memory[out_physical_address];
+
 	
+	if((flags >> 1) == 3) {
+		FILE *file;
+		file = fopen("swapspace.bin", "rb+");
+
+		//ppvv * PAGE_SIZE
+		char disk_address = ((process_id << 2) | outgoing) * PAGE_SIZE;
+
+
+		fseek(file, disk_address, SEEK_SET);
+	
+		fwrite(outgoing_page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
+
+		fclose(file);
+
+		flags = flags & (~LOC_MASK); //turns off the loc mask
+
+		memory[outgoing * PAGE_TABLE_ENTRY_SIZE + (baseRegister + PAGE_TABLE_ENTRY_SIZE - 2] = disk_address;
+
+		//now we need to load the next one
+	}
+
+	file = fopen("swapspace.bin", "rb+");
+
+	char cool_stuff[PAGE_SIZE];
+
+	fseek(file, disk_address, SEEK_SET);
+
+	fread(&cool_stuff, sizeof(char), sizeof(char) * PAGE_SIZE, file);
+
+
+	for(int x = 0; x < PAGE_SIZE; x++) {
+		cool_stuff[x] = cool_stuff[x] & 255;
+	}
+
 }
 
 
