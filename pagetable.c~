@@ -1,0 +1,7 @@
+void isValid(unsigned int, unsigned int);
+void isWritable(unsigned int, unsigned int);
+void isOnPhysicalMemory(unsigned int, unsigned int);
+
+void setFlags(unsigned int valid, unsigned int writable, usigned int onMemory) {
+
+}
