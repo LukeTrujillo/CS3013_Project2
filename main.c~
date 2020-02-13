@@ -27,16 +27,25 @@
 #define VALID_BIT_SHIFT 2
 #define WRITE_BIT_SHIFY 0
 
+#define SWAP_SPACE 64
+
 //two left-most bits are VPN, the rest are the offset
 
-unsigned char memory[MAX_PROCESS * PHYSICAL_MEMORY_SIZE];
+unsigned char memory[PHYSICAL_MEMORY_SIZE];
 int hardwareRegister[MAX_PROCESS];
 
+unsigned int pageTaken[PAGE_NUMBER];
+unsigned int swapSlotsTake[SWAP_SPACE];
+
+void map(unsigned int, unsigned int, unsigned int);
+
+
+char const HR_ADDR_MASK = 0b1111110;
+char const HR_LOC_MASK = 0b1;
+
+
+// OLD STUFF below
 unsigned int freeList[MAX_PROCESS];
-
-unsigned int processFreeList[MAX_PROCESS][PAGE_NUMBER];
-
-unsigned char swapMemory[MAX_PROCESS][PAGE_SIZE];
 
 unsigned int swapBlockCounter;
 
@@ -47,6 +56,8 @@ char const VALID_BIT_MASK = 0b100;
 char const LOC_BIT_MASK = 0b010;
 char const WRITE_BIT_MASK = 0b001;
 
+int debug = 1;
+
 
 int createPageTableBaseRegister(int);
 void setup();
@@ -54,8 +65,12 @@ char* getNextFreePage(int, int, int);
 int getPageTableBaseRegister(int);
 void parse(char*, char**);
 
+char* getPageTable(int);
+
 void addPageTableEntry(int, int, int);
 int convertVPNtoPFN(int, int);
+
+int getOpenPageNumber(unsigned int);
 
 void swap(int, int, int);
 
@@ -74,6 +89,9 @@ char getFlagByte(unsigned int, unsigned int);
 unsigned int isValid(unsigned int, unsigned int);
 unsigned int isWritable(unsigned int, unsigned int);
 unsigned int onPhysicalMemory(unsigned int, unsigned int);
+
+unsigned int getNumberOfPTE(unsigned int);
+unsigned int getNumberOfUsedPages(unsigned int);
 
 unsigned int allPagesFull(unsigned int);
 
@@ -101,7 +119,10 @@ int main(int argc, char** argv) {
 
 		if(strcmp(command, "map") == 0) {
 
-			if(pageExists(process_id, virtual_address) == 1) {
+
+			if(pageExists(process_id, virtual_address & 0b110000) == 1) {
+
+				virtual_address = virtual_address & 0b110000;
 
 				if(isWritable(process_id, virtual_address) == value) {
 					printf("#Error: virtual page %d is already mapped with rw_bit=%d\n", ((virtual_address & VPN_MASK) >> OFFSET_SIZE), value);
@@ -110,6 +131,7 @@ int main(int argc, char** argv) {
 					printf("The permissions have been updated.\n");
 				}
 			} else {
+				
 				getNextFreePage(process_id, virtual_address, value);
 			}
 
@@ -165,14 +187,20 @@ void setup() {
 		hardwareRegister[x] = -1;
 	}
 
-	for(int x = 0; x < MAX_PROCESS; x++) {
-		for(int y = 0; y < PAGE_NUMBER; y++) {
-			processFreeList[x][y] = 1;
-		}	
+	for(int x = 0; x < PAGE_NUMBER; x++) {
+		pageTaken[x] = 1;
 	}
+
+	for(int x = 0; x < PAGE_NUMBER; x++) {
+		swapSlotTaken[x] = 1;
+	}
+
 }
 
 int getPageTableBaseRegister(int process_id) {
+
+
+	//printf("getPageTableTable = %d \n", hardwareRegister[0]);
 	if(hardwareRegister[process_id] != -1) {
 		return hardwareRegister[process_id];
 	} 
@@ -181,7 +209,7 @@ int getPageTableBaseRegister(int process_id) {
 }
 int createPageTableBaseRegister(int process_id) {
 	for(int x = 0; x < MAX_PROCESS; x++) {
-		if(freeList[x] == 1) {
+		if(freeList[x] == 1 && hardwareRegister[process_id] == -1) {
 			//found a free space
 			hardwareRegister[process_id] = x * PHYSICAL_MEMORY_SIZE;
 
@@ -199,37 +227,142 @@ int createPageTableBaseRegister(int process_id) {
 
 }
 
+void map(unsigned int process_id, unsigned int vpn, unsigned int rwFlag) {
+	int shouldCreate = !hasPageTable(process_id);
+
+	if(shouldCreate) {
+		createPageTable(process_id); //create the page table
+	}
+
+	addPTE(process_id, vpn, rwFlag); //otherwise just add and allocate the space
+	
+}
+
+void createPageTable(unsigned int process_id) {
+	unsigned int makeLocation = freePage(); //will either swap the page or return a free one	
+}
+
+/*
+	
+*/
+unsigned int freePage() {
+	//check if there is already a free page, if there is return the pfn
+	for(int x = 0; x < PAGE_NUMBER; x++) {
+		if(pageTaken[x] == 1) { return x; }
+	}
+
+	//choose who to swap
+	srand(time(0));
+
+	int evictee = rand() % PAGE_NUMBER; //the page number to be evicted
+	
+	//swap out
+	char diskAddress = bringToDisk(evictee);
+
+	updatePTEOnDisk(process_id, evictee, diskAddress); //find the PTE, add the disk address, and change the flag
+
+	return freePage();
+}
+
+char* getPageFrame(unsigned int pfn) {
+	return &memory[pfn * PAGE_SIZE];
+}
+
+void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
+	for(int x = 0; x < MAX_PROCESS; x++) {
+		char reg = hardwareRegister[x];
+	
+		if((reg & HR_ADDR_MASK) == evictee && (reg & HR_LOC_MASK)) {
+			//is a PTE
+
+			char new_reg = (diskAddress << 1) | 0; //set the address and note that it is not on physical memeory
+			hardwareRegister[x] = new_reg;
+		}
+	}
+
+	//go to each page table and find the one being evicted
+
+	for(int x = 0; x < MAX_PROCESS; x++) {
+		char *pageTable = loadPageTable(x);
+
+		for(int y = 0; y < PAGE_SIZE; y += PAGE_TABLE_ENTRY_SIZE) {
+			if(pageTable[y] == evictee && pageTable[y + 3] & LOC_BIT_MASK) {
+				
+				printf("PFN %d swapped into swap space %d\n", evictee, diskAddress);
+
+				pageTable[y + 1] = diskAddress; 
+				pageTable[y + 3] = pageTable[y + 3] & ~(LOC_BIT_MASK);
+
+			}
+		}
+	}
+	
+
+	//not a page table	
+}
+
+
+
+char bringToDisk(unsigned int evictee) {
+
+	char diskAddress;
+	//find where to swap it too
+	for(int x = 0; x < SWAP_SPACES; x++) {
+		if(swapSlotTaken[x] == 1) {
+			diskAddress = x;
+			swapSlotTaken[x] = 0;
+			break;
+		}
+	}
+
+	char *page = getPageFrame(evictee);
+
+	FILE *file;
+	file = fopen("swapspace.bin", "rb+");
+
+	fseek(file, diskAddress, SEEK_SET);
+
+	fwrite(page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
+
+	fclose(file);
+	
+	//it should now be on the disk
+
+	return diskAddress;
+}
+
+
+
+
+unsigned int getPFN(unsigned int process_id, unsigned int vpn) {
+	char *pageTable = loadPageTable(process_id); //this will return the pageTable, or swap it in and then return the offset
+
+}
+char* loadPageTable(unsigned int process_id) {
+	if(!hardwareRegister[process_id] & HR_LOC_MASK) { //if the page table is not loaded 
+		//load it 
+
+	} 
+
+	//now its on the disk
+
+	char *pageTable;
+
+	pageTable = &memory[(hardwareRegister[process_id] & (HR_ADDR_MASK >> 1)) * PAGE_SIZE];
+
+	return pageTable;
+}
+
+unsigned int hasPageTable(unsigned int process_id) { return hardwareRegister != -1; }
+
+
+
+
 char* getNextFreePage(int process_id, int vpn, int rwFlag) {
 	int startingIndex = createPageTableBaseRegister(process_id);
-	
-	//now we need to find the next free page
 
-	if(allPagesFull(process_id)) { //a swap needs to happen
-		
-		//choose a page randomly 
-
-		//get the pfn
-		srand(time(0));
-
-		int choice = (rand() % 3); //evict the memory stored in the 0 - 2 th spot
-
-		//now we need to find the vpn somehow
-
-		char *pageTable = getPageTable(process_id);
-
-
-		for(int x = 0; x < PAGE_SIZE; x += PAGE_TABLE_ENTRY_SIZE) {
-			int temp_vpn = x / PAGE_TABLE_ENTRY_SIZE;
-
-			if(memory[getPageTableBaseRegister(process_id) + x * PAGE_TABLE_ENTRY_SIZE] == choice && isValid(process_id, temp_vpn) && onPhysicalMemory(process_id, temp_vpn)) {
-				//this is the page to evict, maybe this actually doesnt work		
-			}	
-		}
-		
-			
-		addPageTableEntry(process_id, vpn, rwFlag);	
-
-
+	if(getNumberOfUsedPages(process_id) == 3){
+		printf("we need to swap\n");
 	} else {
 		addPageTableEntry(process_id, vpn, rwFlag);
 		convertVPNtoPFN(process_id, vpn);
@@ -253,23 +386,63 @@ void addPageTableEntry(int process_id, int vpn, int rwFlag) {
 	int startingIndex = getPageTableBaseRegister(process_id);
 	char *pageTable = getPageTable(process_id);
 
-	for(int x = 0; x < PAGE_NUMBER - 1; x++) {
-		if(processFreeList[process_id][x] == 1) {
-			processFreeList[process_id][x] = 0;
+	int open = getOpenPageNumber(process_id);
 
-			printf("Mapped virtual address %d (page %d) into physical frame %d\n", vpn, x, ((startingIndex + x * PAGE_SIZE) / PAGE_SIZE) + 1);
-			
-			memory[startingIndex + vpn * PAGE_TABLE_ENTRY_SIZE] = x;
-
-			//last byte: 0000 0 loc,valid,rw
+	if(open != -1) {
 
 
-			setFlags(process_id, vpn, 1, 1, rwFlag);
-			break;
-			
-		}
-	}	
+		vpn = vpn & 0b110000;
+	
+		printf("Mapped virtual address %d (page %d) into physical frame %d\n", vpn, open, ((startingIndex + (open) * PAGE_SIZE) / PAGE_SIZE) + 1);
+
+		memory[startingIndex + vpn * PAGE_TABLE_ENTRY_SIZE] = (open);
+
+		//last byte: 0000 0 loc,valid,rw
+		setFlags(process_id, vpn, 1, 1, rwFlag);
+		
+	}
+		
 }
+int getOpenPageNumber(unsigned int process_id) {
+	char *pageTable = getPageTable(process_id);
+
+	//determine the
+
+	int pages[3] = {0, 0, 0};
+
+	for(int x = 0; x < PAGE_SIZE; x += PAGE_TABLE_ENTRY_SIZE) {
+
+		int vpn = (x / PAGE_TABLE_ENTRY_SIZE);
+
+
+		if(isValid(process_id, vpn)  && onPhysicalMemory(process_id, vpn)) {
+
+			
+			if(pageTable[x] == 0) {
+				pages[0] = 1;
+			} else if(pageTable[x] == 1) {
+				pages[1] = 1;
+			} else if(pageTable[x] == 2) {
+				pages[2] = 1;
+			}
+
+			continue;
+		}
+	}
+
+
+	for(int x = 0; x < 3; x++) {
+		if(pages[x] == 0) {
+			return x;
+
+		}
+	}
+
+	return -1;
+		
+}	
+
+
 
 int convertVPNtoPFN(int process_id, int vpn) {
 	int baseRegister = getPageTableBaseRegister(process_id);
@@ -345,7 +518,7 @@ void swap(int process_id, int outgoing, int incoming) {
 	}
 }
 void printPTE(unsigned int process_id, unsigned vpn) {
-	printf("VPN: %d PFN: %d d_addr: %d valid: %d in_mem: %d loc: %d\n", vpn, getPFN(process_id, vpn), getDiskAddress(process_id, vpn),isValid(process_id, vpn), onPhysicalMemory(process_id, vpn), isWritable(process_id, vpn));
+	printf("VPN: %d PFN: %d d_addr: %d valid: %d in_mem: %d rw: %d\n", vpn, getPFN(process_id, vpn), getDiskAddress(process_id, vpn),isValid(process_id, vpn), onPhysicalMemory(process_id, vpn), isWritable(process_id, vpn));
 
 	printf("PTE: ");
 	printf("%d", memory[vpn * PAGE_TABLE_ENTRY_SIZE + getPageTableBaseRegister(process_id)]);
@@ -364,8 +537,7 @@ unsigned int isValid(unsigned int process_id, unsigned int vpn) { return (getFla
 unsigned int onPhysicalMemory(unsigned int process_id, unsigned int vpn) { return (getFlagByte(process_id, vpn) & LOC_BIT_MASK) != 0; }
 unsigned int isWritable(unsigned int process_id, unsigned int vpn) { return (getFlagByte(process_id, vpn) & WRITE_BIT_MASK) != 0; }
 
-
-/**
+/*
 	-1 means do not alter flagf
 */
 void setFlags(unsigned int process_id, unsigned int vpn, int valid, int location, int write) {
@@ -442,13 +614,48 @@ void insertInto(unsigned int process_id, unsigned int incoming_vpn, unsigned int
 }
 
 unsigned int allPagesFull(unsigned int process_id) {
-	for(int x = 0; x < PAGE_NUMBER; x++) {
+	
+		
+
+	int val = 1;
+
+	for(int x = 1; x < PAGE_NUMBER; x++) {
+	
 		if(processFreeList[process_id][x] == 1) {
-			return 0;	
+
+			val = 0;
 		}
 	}
-	
-	return 1;
+	return val;
+}
+
+
+unsigned int getNumberOfPTE(unsigned int process_id) {
+	int entry_count = 0;
+
+	for(int x = 0; x < PAGE_SIZE; x += PAGE_TABLE_ENTRY_SIZE) {
+		char flag_byte = memory[getPageTableBaseRegister(process_id) + x + 3];
+
+		if(flag_byte & VALID_BIT_MASK != 0) {
+			entry_count++;
+		}
+	} 
+
+	return entry_count;
+}
+
+unsigned int getNumberOfUsedPages(unsigned int process_id) {
+	int used_count = 0;
+
+	for(int x = 0; x < PAGE_SIZE / PAGE_TABLE_ENTRY_SIZE; x++) {
+
+		if(isValid(process_id, x) && onPhysicalMemory(process_id, x)) {
+			used_count++;
+		}
+	} 
+
+	return used_count;
+
 }
 
 
