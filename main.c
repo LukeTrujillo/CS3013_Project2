@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
 	while(1) {
 		char word[100];
 		char* args[4];
-		printf("\n\n\nInstruction? ");
+		printf("\nInstruction? ");
 		scanf("%s", word); 
 
 		printf("%s\n", word);
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
 			} else {
 				map(process_id, virtual_address, value);
 			}
-			printPT();
+			//printPT();
 			continue;
 		}
 		
@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
 				
 				printf("Stored value %d at virtual address %d (physical address %d)\n", value, virtual_address, physical_address);
 				
-				printPage(pfn);
+				//printPage(pfn);
 			} else {
 				printf("Error: writes are not allowed to this page\n");
 			}
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
 				
 				unsigned int pfn = getPFN(process_id, vpn);
 				
-				printPage(pfn);
+				//printPage(pfn);
 				
 				unsigned int offset = virtual_address & 0b1111;
 				unsigned int physical_address = (PAGE_SIZE * pfn) + offset;
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 			
 				printf("The value %d is virtual address %d (physical address %d)\n", val, virtual_address, physical_address);
 		} 
-		printPT();
+		//printPT();
 	}
 
 	return 0;
@@ -222,7 +222,7 @@ void setup() {
 	fwrite(memory, sizeof(char), sizeof(char) * PHYSICAL_MEMORY_SIZE, file);
 	fclose(file);
 	
-	printSwapSpace();
+	//sprintSwapSpace();
 
 }
 void map(char process_id, char vpn, char rwFlag) {
@@ -409,7 +409,6 @@ void evict(unsigned int process_id) {
 			return;
 	}
 	
-	
 	evicteePageTable[evicteeVPN * PAGE_TABLE_ENTRY_SIZE + 1] = diskAddress;
 	
 	//update the page location flag
@@ -418,7 +417,7 @@ void evict(unsigned int process_id) {
 	savePT(evicteePID, evicteePageTable);
 
 	
-	printSwapSpace();
+	//printSwapSpace();
 
 }
 
@@ -461,7 +460,7 @@ void loadPage(unsigned int process_id, unsigned int vpn, char *page) {
 		unsigned int pfn = getPFN(process_id, vpn);
 		page = getPageFrame(process_id);
 	} else {
-		printf("this shouldn't happen, loading isnt working right\n");
+		printf("Error with system R/W permissions.\n");
 	}
 	
 	
@@ -476,14 +475,8 @@ void savePage(unsigned int process_id, unsigned int vpn, char *page) {
 			for(int x = 0; x < PAGE_SIZE; x++) {
 				memory[pfn * PAGE_SIZE + x] = page[x];
 			}
-			
-			printf("save completed");
-		} else {
-				printf("called savePage() on a page on the disk! thats bad!");
-			
+
 		}
-		
-	
 }
 
 unsigned int ptOnPhysicalMemory(unsigned int process_id) {	
