@@ -63,6 +63,7 @@ unsigned int hasPageTable(unsigned int);
 
 unsigned int vpnExists(unsigned int, unsigned int);
 unsigned int isValid (unsigned int, unsigned int);
+unsigned int onPhysicalMemory(unsigned int, unsigned int);
 
 char const HR_ADDR_MASK = 0b1111110;
 char const HR_LOC_MASK = 0b1;
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
 	while(1) {
 		char word[100];
 		char* args[4];
-		printf("Instruction? ");
+		printf("\n\n\nInstruction? ");
 		scanf("%s", word); 
 
 		parse(word, args);
@@ -91,9 +92,7 @@ int main(int argc, char** argv) {
 			virtual_address = (virtual_address & 0b110000) >> 4;
 
 			if(vpnExists(process_id, virtual_address)) {
-				
-				printf("page exists\n");
-				
+			
 				if(isWritable(process_id, virtual_address) == value) {
 						printf("Error: virtual page %d is already mapped with bit rw_bit = %d\n", virtual_address, value);
 				} else {
@@ -124,7 +123,29 @@ int main(int argc, char** argv) {
 				printf("Error: writes are not allowed to this page\n");
 			}
 		} else if(strcmp(command, "load") == 0) {
+				int vpn = (virtual_address & 0b110000) >> 4;
+				
+				
+				if(onPhysicalMemory(process_id, vpn)) { //load this shit
+					//load from the file 
+					
+					
+					
+					bringFromDisk(diskAddress);
+				}
+				
+				
+				//is on disk
 			
+				unsigned int pfn = getPFN(process_id, vpn);
+				
+				unsigned int offset = virtual_address & 0b1111;
+				unsigned int physical_address = (PAGE_SIZE * pfn) + offset;
+			
+				unsigned char val = memory[physical_address];
+			
+			
+				printf("The value %d is virtual address %d (physical address %d)\n",val, virtual_address, physical_address);
 		} 
 	}
 
@@ -187,12 +208,10 @@ void setPTAddress(unsigned int process_id, char address, unsigned int location) 
 	
 */
 char freePage() {
-	printf("Request for a free page has been made!\n");
 
 	//check if there is already a free page, if there is return the pfn
 	for(int x = 0; x < PAGE_NUMBER; x++) {
 		if(pageTaken[x] == 1) { 
-			printf("Page %d is free.\n", x);
 			pageTaken[x] = 0;
 			return x; 
 		}
@@ -210,7 +229,7 @@ char freePage() {
 
 	updatePTEOnDisk(evictee, diskAddress); //find the PTE, add the disk address, and change the flag
 
-	return freePage();
+	return evictee;
 }
 char* getPageFrame(unsigned int pfn) {
 	return &memory[pfn * PAGE_SIZE];
@@ -247,6 +266,26 @@ void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
 
 	//not a page table	
 }
+void updatePTEFromDisk(unsigned int process_id, unsigned int vpn, unsigned int pfn, unsigned int diskAddress) {
+	char *pageTable = loadPageTable(x);
+	
+	char *pageTableEntry = pageTable[PAGE_TABLE_ENTRY_SIZE * vpn];
+	
+	char assigned = (diskAddress << 1) | 0;
+	
+	for(int x = 0; x < MAX_PROCESS; x++) {
+		if(assigned == hardwareRegister[x]) { //is a page table
+				hardwareRegister[x] = (pfn << 1) | 1;
+				pageTaken[pfn] = 0;
+				return;
+		}
+	}
+	
+	pageTableEntry[0] = pfn; //set the pfn
+	setFlagByte(process_id, vpn, -1, 1, -1);
+
+	//not a page table	
+}
 char bringToDisk(unsigned int evictee) {
 
 	char diskAddress;
@@ -270,7 +309,7 @@ char bringToDisk(unsigned int evictee) {
 
 	fclose(file);
 
-	pageTaken[evictee] = 0;
+	pageTaken[evictee] = 1;
 
 	for(int x = evictee * PAGE_SIZE; x < (evictee + 1) * PAGE_SIZE; x++) {
 		memory[x] = 0;
@@ -278,7 +317,7 @@ char bringToDisk(unsigned int evictee) {
 
 	return diskAddress;
 }
-void bringFromDisk(unsigned int diskAddress) { //need to update PT
+unsigned int  bringFromDisk(unsigned int diskAddress) { //need to update PT
 	unsigned int destination = freePage();
 	
 	char page[PAGE_SIZE];
@@ -299,15 +338,16 @@ void bringFromDisk(unsigned int diskAddress) { //need to update PT
 	for(int x = 0; x < PAGE_SIZE; x++) {
 		putIn[x] = page[x]; //copy things over 
 	}
-
 	
-
+	return destination;
 }
 char getPTAddress(unsigned int process_id) { return (hardwareRegister[process_id] >> 1); }
 char* loadPageTable(unsigned int process_id) {
 	if(!(hardwareRegister[process_id] & HR_LOC_MASK)) { //if the page table is not loaded 
 		printf("need to load page table from memory\n");
-		bringFromDisk(getPTAddress(process_id));
+		unsigned int pfn = bringFromDisk(getPTAddress(process_id));
+		
+		updatePTEFromDisk(process_id, 0, pfn, getPTAddress(process_id)); //do stuff
 	} 
 
 	//now its on the disk
@@ -368,8 +408,7 @@ void setFlagByte(unsigned int process_id, unsigned int vpn, int valid, int on, i
 	
 	char *pageTable = loadPageTable(process_id);
 	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3] = flagByte;
-	
-	printf("Flag byte updated %d RW: %d V: %d\n", flagByte, rw, valid);
+
 	
 }
 unsigned int isWritable(unsigned int process_id, unsigned int vpn) {
@@ -379,11 +418,12 @@ unsigned int isWritable(unsigned int process_id, unsigned int vpn) {
 	return (flagByte & 0b1);
 	
 }
-
 unsigned int vpnExists(unsigned int process_id, unsigned int vpn) {
 	return hardwareRegister[process_id] != -1 && isValid(process_id, vpn);
 }
-
 unsigned int isValid(unsigned int process_id, unsigned int vpn) {
 	return (getFlagByte(process_id, vpn) & 0b100) != 0;
+}
+unsigned int onPhysicalMemory(unsigned int process_id, unsigned int vpn) {
+	return (getFlagByte(process_id, vpn) & 0b010) != 0;
 }
