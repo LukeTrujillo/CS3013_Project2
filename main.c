@@ -106,10 +106,28 @@ int main(int argc, char** argv) {
 			} else {
 				map(process_id, virtual_address, value);
 			}
-
-		} else if(strcmp(command, "store") == 0) {
-			 int vpn = (virtual_address & 0b110000) >> 4;
+			continue;
+		}
+		
+		
+		//make sure the vpn is loaded 
+		 int vpn = (virtual_address & 0b110000) >> 4;
 			
+		if(!onPhysicalMemory(process_id, vpn)) { //load this shit
+			
+			printf("the page needs to be loaded\n");
+			
+			//load from the file 
+			char *pageTable = loadPageTable(process_id);
+			
+			char diskAddress = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1];
+			
+			unsigned int pfn = bringFromDisk(diskAddress);
+			updatePTEFromDisk(process_id, vpn, pfn, diskAddress);
+		}
+				
+		
+		 if(strcmp(command, "store") == 0) {
 			
 			if(isWritable(process_id, vpn)) {
 				unsigned int pfn = getPFN(process_id, vpn);
@@ -127,20 +145,6 @@ int main(int argc, char** argv) {
 				printf("Error: writes are not allowed to this page\n");
 			}
 		} else if(strcmp(command, "load") == 0) {
-				int vpn = (virtual_address & 0b110000) >> 4;
-				
-				
-				if(onPhysicalMemory(process_id, vpn)) { //load this shit
-					//load from the file 
-					char *pageTable = loadPageTable(process_id);
-					
-					char diskAddress = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1];
-					
-					unsigned int pfn = bringFromDisk(diskAddress);
-					updatePTEFromDisk(process_id, vpn, pfn, diskAddress);
-				}
-				
-				
 				//is on disk
 			
 				unsigned int pfn = getPFN(process_id, vpn);
@@ -202,14 +206,12 @@ void createPageTable(unsigned int process_id) {
 	setPTAddress(process_id, makeLocation, 1);
 
 }
-
 /* 
  1 = on physical memeory, 0 = disk
 */
 void setPTAddress(unsigned int process_id, char address, unsigned int location) {
 	hardwareRegister[process_id] = (address << 1) | (location & 0b1);
 }
-
 /*
 	
 */
@@ -249,6 +251,8 @@ void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
 
 			char new_reg = (diskAddress << 1) | 0; //set the address and note that it is not on physical memeory
 			hardwareRegister[x] = new_reg;
+			
+			return;
 		}
 	}
 
@@ -263,7 +267,7 @@ void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
 				printf("PFN %d swapped into swap space %d\n", evictee, diskAddress);
 
 				pageTable[y + 1] = diskAddress; 
-				pageTable[y + 3] = pageTable[y + 3] & ~(HR_LOC_MASK);
+				setFlagByte(x, evictee, -1, 0, -1);
 
 			}
 		}
