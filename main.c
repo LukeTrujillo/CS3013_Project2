@@ -65,6 +65,10 @@ unsigned int vpnExists(unsigned int, unsigned int);
 unsigned int isValid (unsigned int, unsigned int);
 unsigned int onPhysicalMemory(unsigned int, unsigned int);
 
+unsigned int bringFromDisk(unsigned int);
+
+void updatePTEFromDisk(unsigned int, unsigned int, unsigned int, unsigned int);
+
 char const HR_ADDR_MASK = 0b1111110;
 char const HR_LOC_MASK = 0b1;
 
@@ -128,10 +132,12 @@ int main(int argc, char** argv) {
 				
 				if(onPhysicalMemory(process_id, vpn)) { //load this shit
 					//load from the file 
+					char *pageTable = loadPageTable(process_id);
 					
+					char diskAddress = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1];
 					
-					
-					bringFromDisk(diskAddress);
+					unsigned int pfn = bringFromDisk(diskAddress);
+					updatePTEFromDisk(process_id, vpn, pfn, diskAddress);
 				}
 				
 				
@@ -267,9 +273,9 @@ void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
 	//not a page table	
 }
 void updatePTEFromDisk(unsigned int process_id, unsigned int vpn, unsigned int pfn, unsigned int diskAddress) {
-	char *pageTable = loadPageTable(x);
+	char *pageTable = loadPageTable(process_id);
 	
-	char *pageTableEntry = pageTable[PAGE_TABLE_ENTRY_SIZE * vpn];
+	char *pageTableEntry = &pageTable[PAGE_TABLE_ENTRY_SIZE * vpn];
 	
 	char assigned = (diskAddress << 1) | 0;
 	
