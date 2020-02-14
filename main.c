@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define PHYSICAL_MEMORY_SIZE 64
 #define PAGE_SIZE 16
@@ -65,13 +66,18 @@ unsigned int vpnExists(unsigned int, unsigned int);
 unsigned int isValid (unsigned int, unsigned int);
 unsigned int onPhysicalMemory(unsigned int, unsigned int);
 
-unsigned int bringFromDisk(unsigned int, unsigned int);
+void loadPage(unsigned int, unsigned int, char*);
+void savePage(unsigned int, unsigned int, char*);
 
-void updatePTEFromDisk(unsigned int, unsigned int, unsigned int, unsigned int);
+void printPT();
 
 char const HR_ADDR_MASK = 0b1111110;
 char const HR_LOC_MASK = 0b1;
 
+void evict(unsigned int);
+char* loadPT(unsigned int, char*);
+void savePT(unsigned int, char*);
+void printPage(unsigned int);
 
 int main(int argc, char** argv) {
 	setup();
@@ -106,30 +112,22 @@ int main(int argc, char** argv) {
 			} else {
 				map(process_id, virtual_address, value);
 			}
+			printPT();
 			continue;
 		}
 		
 		
 		//make sure the vpn is loaded 
 		int vpn = (virtual_address & 0b110000) >> 4;
-			
-		if(!onPhysicalMemory(process_id, vpn)) { //load this shit
-			
-			printf("the page needs to be loaded\n");
-			
-			//load from the file 
-			char *pageTable = loadPageTable(process_id);
-			
-			char diskAddress = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1];
-			
-			unsigned int pfn = bringFromDisk(diskAddress, process_id);
-			updatePTEFromDisk(process_id, vpn, pfn, diskAddress);
-		}
-				
 		
 		 if(strcmp(command, "store") == 0) {
 			
+			
 			if(isWritable(process_id, vpn)) {
+				
+				char page[PAGE_SIZE];
+				loadPage(process_id, vpn, page);
+				
 				unsigned int pfn = getPFN(process_id, vpn);
 				
 
@@ -141,13 +139,18 @@ int main(int argc, char** argv) {
 				
 				printf("Stored value %d at virtual address %d (physical address %d)\n", value, virtual_address, physical_address);
 				
+				printPage(pfn);
 			} else {
 				printf("Error: writes are not allowed to this page\n");
 			}
 		} else if(strcmp(command, "load") == 0) {
 				//is on disk
-			
+				char page[PAGE_SIZE];
+				loadPage(process_id, vpn, page);
+				
 				unsigned int pfn = getPFN(process_id, vpn);
+				
+				printPage(pfn);
 				
 				unsigned int offset = virtual_address & 0b1111;
 				unsigned int physical_address = (PAGE_SIZE * pfn) + offset;
@@ -157,6 +160,7 @@ int main(int argc, char** argv) {
 			
 				printf("The value %d is virtual address %d (physical address %d)\n",val, virtual_address, physical_address);
 		} 
+		printPT();
 	}
 
 	return 0;
@@ -187,23 +191,59 @@ void map(char process_id, char vpn, char rwFlag) {
 	addPTE(process_id, vpn, rwFlag); //otherwise just add and allocate the space
 	
 }
+
+void printPage(unsigned int pfn) {
+	printf("PFN(%d): ", pfn);
+	
+	for(int x = 0; x < PAGE_SIZE; x++) {
+			printf("%d ", memory[pfn  * PAGE_SIZE + x]);
+	}
+	printf("\n");
+}
+
+void printPT() {
+	
+	printf("\n\n---SUMMARY---\n");
+	for(int i = 0; i < MAX_PROCESS; i++) {
+		if(hardwareRegister[i] == -1) continue;
+		
+		printf("PID #%d addr: %d: ", i, getPTAddress(i));
+		
+		char pageTable[16]; 
+		loadPT(i, pageTable);
+		
+		for(int x = 0; x < PAGE_SIZE; x++) {
+				printf("%d ", pageTable[x]);
+		}
+		
+		printf("\n");
+	}
+}
 void addPTE(char process_id, char vpn, char rwFlag) {
-	char *pageTable = loadPageTable(process_id);
-
-	char page = freePage(process_id);
-
-	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE] = page;
 	
 	setFlagByte(process_id, vpn, 1, 1, rwFlag);
 	
+	char page = freePage(process_id);
+	
+	char pageTable[16]; 
+	loadPT(process_id, pageTable);
+
+	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE] = page;
+	
 	printf("Mapped virtual address %d into physical frame %d\n", vpn, page);
+	
+	savePT(process_id, pageTable);
 }
 void createPageTable(unsigned int process_id) {
 
-	printf("PID %d has no page table, making one...\n", process_id); 
+	//printf("PID %d has no page table, making one...\n", process_id); 
 	unsigned int makeLocation = freePage(process_id); //will either swap the page or return a free one
 
 	setPTAddress(process_id, makeLocation, 1);
+	
+	pageTaken[makeLocation] = 0;
+	
+	printf("Put page table for PID %d into physical frame %d\n", process_id, makeLocation); //may be wrong place 
 
 }
 /* 
@@ -224,126 +264,74 @@ char freePage(unsigned int process_id) {
 			return x; 
 		}
 	}
-
-	//choose who to swap
-	srand(time(0));
-
-
-		
-	int evictee = rand() % PAGE_NUMBER; //the page number to be evicted
 	
-	while(evictee == getPTAddress(process_id)) {
-		
-		printf("tried to evict the calling process PT, retrying\n");
-		evictee = rand() % PAGE_NUMBER;
+	//choose who to swap
+	evict(process_id);
+
+	
+	//check if there is already a free page, if there is return the pfn
+	for(int x = 0; x < PAGE_NUMBER; x++) {
+		if(pageTaken[x] == 1) { 
+			pageTaken[x] = 0;
+			return x; 
+		}
 	}
 	
-	
-	//swap out
-	char diskAddress = bringToDisk(evictee);
-
-	printf("Evicting page %d to swap space %d\n", evictee, diskAddress);
-
-	updatePTEOnDisk(evictee, diskAddress); //find the PTE, add the disk address, and change the flag
-
-	return evictee;
+	printf("no open pages\n");
 }
 char* getPageFrame(unsigned int pfn) {
 	return &memory[pfn * PAGE_SIZE];
 }
-void updatePTEOnDisk(unsigned int evictee, unsigned int diskAddress) {
-	for(int x = 0; x < MAX_PROCESS; x++) {
-		char reg = hardwareRegister[x];
-	
-		if((reg & HR_ADDR_MASK) == evictee && (reg & HR_LOC_MASK)) {
-			//is a PTE
-
-			char new_reg = (diskAddress << 1) | 0; //set the address and note that it is not on physical memeory
-			hardwareRegister[x] = new_reg;
-			
-			return;
-		}
-	}
-
-	//go to each page table and find the one being evicted
-
-	for(int x = 0; x < MAX_PROCESS; x++) {
-		char *pageTable = loadPageTable(x);
-
-		for(int y = 0; y < PAGE_SIZE; y += PAGE_TABLE_ENTRY_SIZE) {
-			if(pageTable[y] == evictee && pageTable[y + 3] & HR_LOC_MASK) {
-				
-				printf("PFN %d swapped into swap space %d\n", evictee, diskAddress);
-
-				pageTable[y + 1] = diskAddress; 
-				setFlagByte(x, evictee, -1, 0, -1);
-
-			}
-		}
-	}
-	
-
-	//not a page table	
-}
-void updatePTEFromDisk(unsigned int process_id, unsigned int vpn, unsigned int pfn, unsigned int diskAddress) {
-	char *pageTable = loadPageTable(process_id);
-	
-	char *pageTableEntry = &pageTable[PAGE_TABLE_ENTRY_SIZE * vpn];
-	
-	char assigned = (diskAddress << 1) | 0;
-	
-	for(int x = 0; x < MAX_PROCESS; x++) {
-		if(assigned == hardwareRegister[x]) { //is a page table
-				hardwareRegister[x] = (pfn << 1) | 1;
-				pageTaken[pfn] = 0;
-				return;
-		}
-	}
-	
-	pageTableEntry[0] = pfn; //set the pfn
-	setFlagByte(process_id, vpn, -1, 1, -1);
-
-	//not a page table	
-}
-char bringToDisk(unsigned int evictee) {
-
-	char diskAddress;
-	//find where to swap it too
-	for(int x = 0; x < SWAP_SPACES; x++) {
-		if(swapSlotTaken[x] == 1) {
-			diskAddress = x;
-			swapSlotTaken[x] = 0;
-			break;
-		}
-	}
-
-	char *page = getPageFrame(evictee);
-
-	FILE *file;
-	file = fopen("swapspace.txt", "w+");
-
-	fseek(file, diskAddress, SEEK_SET);
-
-	fwrite(page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
-
-	fclose(file);
-
-	pageTaken[evictee] = 1;
-
-	for(int x = evictee * PAGE_SIZE; x < (evictee + 1) * PAGE_SIZE; x++) {
-		memory[x] = 0;
-	}
-
-	return diskAddress;
-}
-unsigned int evict(unsigned int process_id) {
+void evict(unsigned int process_id) {
 	
 	char ptAddress = getPTAddress(process_id); //can not evict this
 	
 	srand(time(0));
-	unsigned int evictee = rand() % PAGE_NUMBER; //the page number to be evicted
+	char evictee = rand() % PAGE_NUMBER; //the page number to be evicted
 	
-	while((evictee = rand() % PAGE_NUMBER) != ptAddress); //can not evict the page table of the calling process
+	while((evictee = rand() % PAGE_NUMBER) == ptAddress); //can not evict the page table of the calling process
+	
+	
+	//find the PT that the evictee corresponds to 
+	
+	
+	unsigned int evicteePID = -1;
+	unsigned int evicteeVPN = -1;
+	
+	for(int x = 0; x < MAX_PROCESS; x++) {
+		
+			if(hardwareRegister[x] == -1) continue;
+			
+			char pageTable[PAGE_SIZE];
+			
+			loadPT(x, pageTable);
+			
+		
+			for(int y = 0; y < PAGE_SIZE; y++) {
+				
+				
+				if(pageTable[y] == evictee && onPhysicalMemory(x, (y / PAGE_TABLE_ENTRY_SIZE))) {
+					evicteePID = x;
+					evicteeVPN = (y / PAGE_TABLE_ENTRY_SIZE);
+					
+					break;
+					
+				}
+				
+				
+				
+			}
+	}
+
+	
+	if(evicteePID == -1 || evicteeVPN == -1) {
+			printf("could not find PID/VPN %d/%d for evictee %d\n", evicteePID, evicteeVPN, evictee);
+			return;
+	}
+	
+	char evicteePageTable[PAGE_SIZE];
+	loadPT(evicteePID, evicteePageTable);
+
 	
 	char diskAddress;
 	//find where to swap it too
@@ -385,7 +373,78 @@ unsigned int evict(unsigned int process_id) {
 	//and we need to load the page table of the evictee
 	
 	
+	evicteePageTable[evicteeVPN * PAGE_TABLE_ENTRY_SIZE + 1] = diskAddress;
 	
+	//update the page location flag
+	evicteePageTable[evicteeVPN * PAGE_TABLE_ENTRY_SIZE + 3] = evicteePageTable[evicteeVPN * PAGE_TABLE_ENTRY_SIZE + 3] & (~0b010);
+	
+	savePT(evicteePID, evicteePageTable);
+	
+	printf("Swapped frame %d into swap spot %d\n", evictee, diskAddress);
+
+}
+
+
+void loadPage(unsigned int process_id, unsigned int vpn, char *page) {
+	
+	if(!onPhysicalMemory(process_id, vpn)) {
+		//needs to be loaded 
+		
+		unsigned int emptySpace = freePage(process_id);
+		
+		char pageTable[PAGE_SIZE];
+		loadPT(process_id, pageTable);
+		
+		char diskAddress = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1];
+		
+		FILE *file;
+		
+		file = fopen("swapspace.txt", "r+");
+		fseek(file, diskAddress, SEEK_SET);
+		fread(page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
+		
+		fclose(file);
+			
+		for(int x = 0; x < PAGE_SIZE; x++) {
+				memory[emptySpace * PAGE_SIZE + x] = page[x];
+		}
+		
+		pageTable[vpn * PAGE_TABLE_ENTRY_SIZE] = emptySpace;
+		pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3] = pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3] | 0b010;
+		
+		savePT(process_id, pageTable);
+		
+		printf("Swapped disk slot %d into fram %d\n", diskAddress, emptySpace);
+	}
+	
+	//now it should be loaded
+	
+	if(onPhysicalMemory(process_id, vpn)) {
+		unsigned int pfn = getPFN(process_id, vpn);
+		page = getPageFrame(process_id);
+	} else {
+		printf("this shouldn't happen, loading isnt working right\n");
+	}
+	
+	
+}
+
+void savePage(unsigned int process_id, unsigned int vpn, char *page) {
+		
+		if(onPhysicalMemory(process_id, vpn)) {
+			unsigned int pfn = getPFN(process_id, vpn);
+			
+			
+			for(int x = 0; x < PAGE_SIZE; x++) {
+				memory[pfn * PAGE_SIZE + x] = page[x];
+			}
+			
+			printf("save completed");
+		} else {
+				printf("called savePage() on a page on the disk! thats bad!");
+			
+		}
+		
 	
 }
 
@@ -393,53 +452,56 @@ unsigned int ptOnPhysicalMemory(unsigned int process_id) {
 	return (0b01 & hardwareRegister[process_id]) != 0;
 }
 
-unsigned int updatePTE(unsigned int process_id, unsigned int vpn, unsigned int pfn, int valid, int mem, int rw) {
+unsigned int updatePTE(unsigned int process_id, unsigned int vpn, unsigned int pfn, char diskAddress, int valid, int mem, int rw) {
 	
-	if(!ptOnPhysicalMemory(process_id)) {
-		//needs to be soft loaded
-		
-	} else { //can just be edited
-		char pageTable = loadPageTable(process_id);
-		
-		
-	}
+	char pageTable[16];
+	 loadPT(process_id, pageTable);
+	
+	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE] = pfn;
+	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 1] = diskAddress;
+	
+	
+	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3] =  (mem << 1) | (rw << 0);
+	
+	savePT(process_id, pageTable);
 }
 
-
-char* loadPT(unsigned int process_id) {
+char* loadPT(unsigned int process_id, char* pageTable) {
+	if(hardwareRegister[process_id] == -1) { return NULL; }
 	
 	if(!ptOnPhysicalMemory(process_id)) {
 		
 		char diskAddress = getPTAddress(process_id);
-	
-		char page[PAGE_SIZE];
 		
 		FILE *file;
 		file = fopen("swapspace.txt", "r+");
 
 		fseek(file, diskAddress, SEEK_SET);
 
-		fread(page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
+		fread(pageTable, sizeof(char), sizeof(char) * PAGE_SIZE, file);
 
 		fclose(file);
 		
-		return page;
+		
 		
 	} else {
-		char pageTable[PAGE_SIZE];
 		
 		for(int x = 0; x < PAGE_SIZE; x++) {
 			pageTable[x] = memory[getPTAddress(process_id) * PAGE_SIZE + x];
 		}
 		
-		return pageTable;
 	}
 	
 }
 void savePT(unsigned int process_id, char *pageTable) {
+	if(hardwareRegister[process_id] == -1) { return; }
+	
 	if(!ptOnPhysicalMemory(process_id)) {
 		FILE *file;
 		file = fopen("swapspace.txt", "w+");
+		
+		
+		char diskAddress = getPTAddress(process_id);
 
 		fseek(file, diskAddress, SEEK_SET);
 
@@ -453,36 +515,9 @@ void savePT(unsigned int process_id, char *pageTable) {
 		}
 		
 	}
-	
-	printf("The page table for PID %d has been saved\n", process_id);
 }
 
 
-
-unsigned int  bringFromDisk(unsigned int process_id, unsigned int diskAddress) { //need to update PT
-	unsigned int destination = freePage(process_id);
-	
-	char page[PAGE_SIZE];
-	
-	FILE *file;
-	file = fopen("swapspace.txt", "r+");
-
-	fseek(file, diskAddress, SEEK_SET);
-
-	fread(page, sizeof(char), sizeof(char) * PAGE_SIZE, file);
-
-	fclose(file);
-
-	swapSlotTaken[diskAddress] = 1;
-
-	char *putIn = getPageFrame(destination);
-
-	for(int x = 0; x < PAGE_SIZE; x++) {
-		putIn[x] = page[x]; //copy things over 
-	}
-	
-	return destination;
-}
 char getPTAddress(unsigned int process_id) { return (hardwareRegister[process_id] >> 1); }
 unsigned int hasPageTable(unsigned int process_id) { return hardwareRegister[process_id] != -1; }
 void parse(char* str, char** strs){
@@ -492,12 +527,14 @@ void parse(char* str, char** strs){
 	strs[3] = strtok(NULL, ",");
 }
 unsigned int getPFN(unsigned int process_id, unsigned int vpn) {
-	char *pageTable = loadPageTable(process_id);
+	char pageTable[16];
+	loadPT(process_id, pageTable);
 	
 	return pageTable[vpn * PAGE_TABLE_ENTRY_SIZE];
 }
 char getFlagByte(unsigned int process_id, unsigned int vpn) {
-	char *pageTable = loadPageTable(process_id);
+	char pageTable[16];
+	loadPT(process_id, pageTable);
 	
 	return pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3];
 }
@@ -532,15 +569,16 @@ void setFlagByte(unsigned int process_id, unsigned int vpn, int valid, int on, i
 			}
 	}
 	
-	char *pageTable = loadPageTable(process_id);
+	char pageTable[16];
+	loadPT(process_id, pageTable);
 	pageTable[vpn * PAGE_TABLE_ENTRY_SIZE + 3] = flagByte;
-
 	
+	savePT(process_id, pageTable);
 }
 unsigned int isWritable(unsigned int process_id, unsigned int vpn) {
 	char flagByte = getFlagByte(process_id, vpn);
 	
-	printf("isWritable flagByte: %d\n", (flagByte & 1));
+	//printf("isWritable flagByte: %d\n", (flagByte & 1));
 	return (flagByte & 0b1);
 	
 }
