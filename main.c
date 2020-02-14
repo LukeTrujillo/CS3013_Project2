@@ -95,7 +95,10 @@ int main(int argc, char** argv) {
 
 		printf("%s\n", word);
 		parse(word, args);
-
+		if (strcmp("End", args[0]) == 0){
+			printf("Finished!\n");
+			break;
+		}
 		unsigned int process_id = atoi(args[0]);
 		char *instruction_type = args[1];
 		unsigned int virtual_address = atoi(args[2]);
